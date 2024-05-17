@@ -1,13 +1,15 @@
 # torch_emt
 
-This repository contains a torch implementation of EMT potential. 
+This repository contains a PyTorch implementation of EMT potential.
 
-The logic resembles the code from [differentiable atomic potentials](https://github.com/google/differentiable-atomistic-potentials/tree/master) repository but is completely vectorized and significantly faster.
+## Example 
 
-This has been mostly a weekend project that I haven't spent a long time on but could add value to anyone else working with this potential.
+This can be easily used as a standard ASE calculator. 
 
-## TODOs
+```
+from torch_emt.calculator import EMTTorchCalc
 
-- [ ] Convert `get_neighbors_oneway` function to torch to make it completely differentiable.
-- [ ] Wrap the code in a torch model and make the parameters learnable. 
+calc = EMTTorchCalc(cpu=True)
+```
+
 
