@@ -1,19 +1,17 @@
 """Differentiable and vectorized torch implementation of EMT inspired from
  https://github.com/google/differentiable-atomistic-potentials/blob/master/dap/ag/emt.py
 
+This implementation is completely differentiable and vectorized in PyTorch.
 """
 
 import math
-from ase.data import chemical_symbols
 from ase.units import Bohr
-from ase.calculators.calculator import Calculator
 
 import torch
 from torch_scatter import scatter
 from torch.autograd import grad
 
-from ocpmodels.common.utils import get_pbc_distances
-from graph import radius_graph_pbc
+from .utils import primitive_neighbor_list
 
 
 PARAM_DICT = {
@@ -42,39 +40,28 @@ def _params_defined_check(numbers):
             raise ValueError(f"Parameters not defined for atomic number {n}")
 
 
-def energy(positions, numbers, cell, strain=None):
+def energy_and_forces(positions, numbers, cell, strain=None, device="cpu"):
 
     if strain is None:
-        strain = torch.zeros((3, 3), device=self.device)
+        strain = torch.zeros((3, 3), device=device)
 
-    strain_tensor = torch.eye(3, device=self.device) + strain
+    strain_tensor = torch.eye(3, device=device) + strain
     cell = torch.mm(strain_tensor, cell.t()).t()
     positions = torch.mm(strain_tensor, positions.t()).t()
     par, rc_list, acut, rc = _calc_params(numbers)
 
     natoms = len(positions)
-    
-    # This utilizes the same graph generation method as the one with numpy
-    # TODO: convert this oneway graph generation to torch
-    all_neighbors, all_offsets = get_neighbors_oneway(
-        positions.numpy(), cell.numpy(), rc_list.item(), skin=0.0
+
+    positions.requires_grad = True
+    i, j, d = primitive_neighbor_list(
+        quantities="ijd",
+        pbc=[True] * 3,
+        cell=cell,
+        positions=positions,
+        cutoff=rc_list,
     )
-    source, target = [], []
-    for i, neighbors_per_atom in enumerate(all_neighbors):
-        target.append(torch.zeros(len(neighbors_per_atom), dtype=int) + i)
-        source.append(torch.tensor(neighbors_per_atom, dtype=int))
-    edge_index = torch.stack((torch.cat(source), torch.cat(target)), dim=0)
-
-    edge_dist = []
-    for a1 in range(len(numbers)):
-        neighbors, offsets = all_neighbors[a1], all_offsets[a1]
-        offsets = np.dot(offsets, cell)
-        for a2, offset in zip(neighbors, offsets):
-            d = positions[a2] + offset - positions[a1]
-            r = np.sqrt(np.dot(d, d))
-            edge_dist.append(r)
-    edge_dist = torch.tensor(edge_dist, device=self.device, requires_grad=True).float()
-
+    edge_index = torch.stack([j, i], dim=0)
+    edge_dist = d
 
     # Calculate
 
@@ -88,7 +75,9 @@ def energy(positions, numbers, cell, strain=None):
     z = 6 * par[numbers][:, 2] * torch.exp(-par[numbers][:, 4] * ds)
     energy += sum(par[numbers][:, 0] * ((1 + x) * y - 1) + z)
 
-    return energy
+    forces = -grad(energy, positions, create_graph=True, allow_unused=True)[0]
+
+    return energy, forces
 
 
 def _edge_energy(edge_dist, edge_index, numbers, params, acut, rc, rc_list):
@@ -98,7 +87,7 @@ def _edge_energy(edge_dist, edge_index, numbers, params, acut, rc, rc_list):
         numbers[edge_index[0]],
         numbers[edge_index[1]],
     )
-    energy_per_edge_i = (
+    energy_per_edge = (
         0.5
         * params[target_atomic_number][:, 2]
         * torch.exp(
@@ -109,22 +98,11 @@ def _edge_energy(edge_dist, edge_index, numbers, params, acut, rc, rc_list):
         * (params[source_atomic_number][:, 6] / params[target_atomic_number][:, 6])
         / params[target_atomic_number][:, 9]
     )
-    energy_per_edge_j = (
-        0.5
-        * params[source_atomic_number][:, 2]
-        * torch.exp(
-            -params[target_atomic_number][:, 4]
-            * (edge_dist / BETA - params[target_atomic_number][:, 1])
-        )
-        * theta
-        / (params[source_atomic_number][:, 6] / params[target_atomic_number][:, 6])
-        / params[source_atomic_number][:, 9]
-    )
-    energy_per_edge = energy_per_edge_i + energy_per_edge_j
+
     mask = edge_dist > rc_list
     energy_per_edge[mask] = 0
-    
-    sigma_per_edge_i = (
+
+    sigma_per_edge = (
         torch.exp(
             -params[source_atomic_number][:, 3]
             * (edge_dist - BETA * params[source_atomic_number][:, 1])
@@ -133,29 +111,19 @@ def _edge_energy(edge_dist, edge_index, numbers, params, acut, rc, rc_list):
         * theta
         / params[target_atomic_number][:, 8]
     )
-    sigma_per_edge_j = (
-        torch.exp(
-            -params[target_atomic_number][:, 3]
-            * (edge_dist - BETA * params[target_atomic_number][:, 1])
-        )
-        / (params[source_atomic_number][:, 6] / params[target_atomic_number][:, 6])
-        * theta
-        / params[source_atomic_number][:, 8]
-    )
-    sigma_per_node_i = scatter(sigma_per_edge_i, edge_index[1], dim=0, reduce="sum")
-    sigma_per_node_j = scatter(sigma_per_edge_j, edge_index[0], dim=0, reduce="sum")
-    sigma_per_node = sigma_per_node_i + sigma_per_node_j
+
+    sigma_per_node = scatter(sigma_per_edge, edge_index[1], dim=0, reduce="sum")
 
     return -sum(energy_per_edge), sigma_per_node
 
 
-def _calc_params(numbers):
+def _calc_params(numbers, device="cpu"):
     rc = 0.0
 
     # TODO: this is memory inefficient but in future we can parametrize and learn this for all elements
-    parameters = torch.zeros(119, 7, device=self.device)
+    parameters = torch.zeros(119, 7, device=device)
 
-    self._params_defined_check(numbers)
+    _params_defined_check(numbers)
 
     for atomic_number, params in PARAM_DICT.items():
         parameters[atomic_number] = torch.tensor(params)
@@ -180,7 +148,7 @@ def _calc_params(numbers):
         gamma1 += x * torch.exp(-eta2 * (r - BETA * s0))
         gamma2 += x * torch.exp(-kappa / BETA * (r - BETA * s0))
 
-    new_params = torch.zeros(119, 10, device=self.device)
+    new_params = torch.zeros(119, 10, device=device)
 
     new_params[:, 0] = parameters[:, 0]  # E0
     new_params[:, 1][numbers] = s0  # s0
@@ -193,9 +161,3 @@ def _calc_params(numbers):
     new_params[:, 8][numbers] = gamma1  # gamma1
     new_params[:, 9][numbers] = gamma2  # gamma2
     return new_params, rc_list, acut, rc
-
-
-def energy_and_forces(positions, numbers, cell):
-    E = energy(positions, numbers, cell)
-    F = -grad(energy, positions, create_graph=True, allow_unused=True)[0]
-    return E, F

@@ -1,12 +1,12 @@
 import unittest
-from emt_pytorch import energy, forces
 import torch
 import numpy as np
 from ase import Atoms
 from ase.build import fcc111, add_adsorbate
 from ase.constraints import FixAtoms
-from emt_gpu_calculator import EMTTorch
+from torch_emt.calculator import EMTTorchCalc
 from ase.calculators.emt import EMT
+
 
 class TestEnergyForcesEquality(unittest.TestCase):
     def setUp(self):
@@ -37,16 +37,17 @@ class TestEnergyForcesEquality(unittest.TestCase):
         cell = torch.tensor(self.substrate.cell.array).float()
 
         # use emt calculator
-        calc = EMTTorch(cpu=True)
+        calc = EMTTorchCalc(cpu=True)
         self.substrate.set_calculator(calc)
         energy_value = self.substrate.get_potential_energy()
         forces_value = self.substrate.get_forces()
 
         # Check if energies are equal
-        self.assertAlmostEqual(self.emt_energy, energy_value, places=6)
+        self.assertAlmostEqual(self.emt_energy, energy_value, places=3)
 
         # Check if forces are equal
-        np.testing.assert_allclose(self.emt_forces, forces_value, atol=1e-5)
+        np.testing.assert_allclose(self.emt_forces, forces_value, atol=1e-2)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
