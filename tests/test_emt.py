@@ -1,53 +1,60 @@
-import unittest
-import torch
 import numpy as np
+import pytest
+import torch
 from ase import Atoms
-from ase.build import fcc111, add_adsorbate
-from ase.constraints import FixAtoms
-from torch_emt.calculator import EMTTorchCalc
+from ase.build import add_adsorbate, fcc111
 from ase.calculators.emt import EMT
+from ase.constraints import FixAtoms
+
+from torch_emt.calculator import EMTTorchCalc
 
 
-class TestEnergyForcesEquality(unittest.TestCase):
-    def setUp(self):
-        # Define the lattice constant of the catalyst's substrate (fcc111 surface of Cu)
-        a = 3.6  # Angstrom
-
-        # Create the catalyst's substrate (fcc111 surface of Cu)
-        self.substrate = fcc111("Cu", size=(2, 2, 3), a=a, vacuum=10.0)
-
-        # Define the adsorbate
-        adsorbate = Atoms("O", positions=[(0, 0, 4.0)])
-
-        # Add the adsorbate to the substrate
-        add_adsorbate(self.substrate, adsorbate, 2.0, position="ontop")
-
-        # Fix the bottom layer of the substrate
-        mask = [atom.position[2] < 1.0 for atom in self.substrate]
-        self.substrate.set_constraint(FixAtoms(mask=mask))
-
-        # Calculate energy and forces using ASE's EMT calculator
-        emt_calc = EMT()
-        self.substrate.set_calculator(emt_calc)
-        self.emt_energy = self.substrate.get_potential_energy()
-        self.emt_forces = self.substrate.get_forces()
-
-    def test_energy_forces_equality(self):
-        # Define lattice parameters and initial strain
-        cell = torch.tensor(self.substrate.cell.array).float()
-
-        # use emt calculator
-        calc = EMTTorchCalc(cpu=True)
-        self.substrate.set_calculator(calc)
-        energy_value = self.substrate.get_potential_energy()
-        forces_value = self.substrate.get_forces()
-
-        # Check if energies are equal
-        self.assertAlmostEqual(self.emt_energy, energy_value, places=3)
-
-        # Check if forces are equal
-        np.testing.assert_allclose(self.emt_forces, forces_value, atol=1e-2)
+@pytest.fixture
+def cu_slab_with_adsorbate():
+    """Cu fcc(111) slab with an O adsorbate."""
+    substrate = fcc111("Cu", size=(2, 2, 3), a=3.6, vacuum=10.0)
+    adsorbate = Atoms("O", positions=[(0, 0, 4.0)])
+    add_adsorbate(substrate, adsorbate, 2.0, position="ontop")
+    mask = [atom.position[2] < 1.0 for atom in substrate]
+    substrate.set_constraint(FixAtoms(mask=mask))
+    return substrate
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_energy_matches_ase(cu_slab_with_adsorbate):
+    atoms = cu_slab_with_adsorbate.copy()
+
+    atoms.calc = EMT()
+    ase_energy = atoms.get_potential_energy()
+
+    atoms.calc = EMTTorchCalc(cpu=True)
+    torch_energy = atoms.get_potential_energy()
+
+    assert torch_energy == pytest.approx(ase_energy, abs=1e-3)
+
+
+def test_forces_match_ase(cu_slab_with_adsorbate):
+    atoms = cu_slab_with_adsorbate.copy()
+
+    atoms.calc = EMT()
+    ase_forces = atoms.get_forces()
+
+    atoms.calc = EMTTorchCalc(cpu=True)
+    torch_forces = atoms.get_forces()
+
+    np.testing.assert_allclose(torch_forces, ase_forces, atol=1e-2)
+
+
+def test_energy_is_differentiable():
+    """Verify that gradients flow through the energy calculation."""
+    from torch_emt.torch_emt import energy_and_forces
+
+    atoms = fcc111("Cu", size=(1, 1, 2), a=3.6, vacuum=10.0)
+    positions = torch.tensor(atoms.get_positions(), dtype=torch.float32)
+    numbers = torch.tensor(atoms.get_atomic_numbers())
+    cell = torch.tensor(atoms.get_cell().array, dtype=torch.float32)
+
+    energy, forces = energy_and_forces(positions, numbers, cell)
+
+    assert energy.requires_grad
+    assert forces is not None
+    assert forces.shape == positions.shape

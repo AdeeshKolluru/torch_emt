@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torch_emt"
+version = "0.1.0"
+description = "Differentiable PyTorch implementation of the Effective Medium Theory (EMT) potential"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+authors = [
+    { name = "Adeesh Kolluru", email = "adeesh.kolluru@gmail.com" },
+]
+keywords = [
+    "pytorch",
+    "emt",
+    "molecular-dynamics",
+    "atomistic-simulation",
+    "differentiable",
+    "ase",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "torch>=1.11",
+    "torch_scatter",
+    "ase>=3.22",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage = "https://github.com/AdeeshKolluru/torch_emt"
+Repository = "https://github.com/AdeeshKolluru/torch_emt"
+Issues = "https://github.com/AdeeshKolluru/torch_emt/issues"
+
+[tool.setuptools.packages.find]
+include = ["torch_emt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
